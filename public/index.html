@@ -1,89 +1,271 @@
 <!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Welcome to Firebase Hosting</title>
+<html lang="es">
 
-    <!-- update the version number as needed -->
-    <script defer src="/__/firebase/12.18.0/firebase-app-compat.js"></script>
-    <!-- include only the Firebase features as you need -->
-    <script defer src="/__/firebase/12.18.0/firebase-auth-compat.js"></script>
-    <script defer src="/__/firebase/12.18.0/firebase-database-compat.js"></script>
-    <script defer src="/__/firebase/12.18.0/firebase-firestore-compat.js"></script>
-    <script defer src="/__/firebase/12.18.0/firebase-functions-compat.js"></script>
-    <script defer src="/__/firebase/12.18.0/firebase-messaging-compat.js"></script>
-    <script defer src="/__/firebase/12.18.0/firebase-storage-compat.js"></script>
-    <script defer src="/__/firebase/12.18.0/firebase-analytics-compat.js"></script>
-    <script defer src="/__/firebase/12.18.0/firebase-remote-config-compat.js"></script>
-    <script defer src="/__/firebase/12.18.0/firebase-performance-compat.js"></script>
-    <!-- 
-      initialize the SDK after all desired features are loaded, set useEmulator to false
-      to avoid connecting the SDK to running emulators.
-    -->
-    <script defer src="/__/firebase/init.js?useEmulator=true"></script>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description"
+        content="Portal de la Biblioteca Central de la Universidad Santa María (USM). Consulta el catálogo bibliográfico, busca libros por título, autor, materia o cota, y verifica la disponibilidad en tiempo real.">
+    <title>Biblioteca Central USM — Catálogo en Línea</title>
 
-    <style media="screen">
-      body { background: #ECEFF1; color: rgba(0,0,0,0.87); font-family: Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 0; }
-      #message { background: white; max-width: 360px; margin: 100px auto 16px; padding: 32px 24px; border-radius: 3px; }
-      #message h2 { color: #ffa100; font-weight: bold; font-size: 16px; margin: 0 0 8px; }
-      #message h1 { font-size: 22px; font-weight: 300; color: rgba(0,0,0,0.6); margin: 0 0 16px;}
-      #message p { line-height: 140%; margin: 16px 0 24px; font-size: 14px; }
-      #message a { display: block; text-align: center; background: #039be5; text-transform: uppercase; text-decoration: none; color: white; padding: 16px; border-radius: 4px; }
-      #message, #message a { box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24); }
-      #load { color: rgba(0,0,0,0.4); text-align: center; font-size: 13px; }
-      @media (max-width: 600px) {
-        body, #message { margin-top: 0; background: white; box-shadow: none; }
-        body { border-top: 16px solid #ffa100; }
-      }
-    </style>
-  </head>
-  <body>
-    <div id="message">
-      <h2>Welcome</h2>
-      <h1>Firebase Hosting Setup Complete</h1>
-      <p>You're seeing this because you've successfully setup Firebase Hosting. Now it's time to go build something extraordinary!</p>
-      <a target="_blank" href="https://firebase.google.com/docs/hosting/">Open Hosting Documentation</a>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Playfair+Display:wght@600;700;800&display=swap"
+        rel="stylesheet">
+
+    <!-- Estilos -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+
+    <!-- ============================================================ -->
+    <!-- NAVBAR INSTITUCIONAL                                          -->
+    <!-- ============================================================ -->
+    <header class="navbar" id="navbar">
+        <!-- Logo y nombre institucional -->
+        <div class="navbar__brand">
+            <img src="assets/logo-usm.png" alt="Logo Universidad Santa María" class="navbar__logo" id="logo-usm">
+            <div class="navbar__brand-text">
+                <span class="navbar__university">Universidad Santa María</span>
+                <span class="navbar__subtitle">Biblioteca Central</span>
+            </div>
+        </div>
+
+        <!-- Mensaje central de bienvenida -->
+        <div class="navbar__welcome">
+            <h1 class="navbar__title">BIENVENIDO/A A LA BIBLIOTECA CENTRAL USM</h1>
+        </div>
+
+        <!-- Botones de Acción (Biblioteca Central + Modo Oscuro/Claro) -->
+        <div class="navbar__actions">
+            <button class="btn btn--bibliography" id="btn-bibliografia">
+                <svg class="btn__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+                    <line x1="8" y1="7" x2="16" y2="7" />
+                    <line x1="8" y1="11" x2="14" y2="11" />
+                </svg>
+                Biblioteca Central
+            </button>
+            <button class="btn btn--theme-toggle" id="btn-theme-toggle" aria-label="Cambiar a modo oscuro o claro"
+                title="Cambiar modo">
+                <!-- Icono Luna (para pasar a oscuro) -->
+                <svg class="theme-icon theme-icon--moon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+                </svg>
+                <!-- Icono Sol (para pasar a claro) -->
+                <svg class="theme-icon theme-icon--sun hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="5"></circle>
+                    <line x1="12" y1="1" x2="12" y2="3"></line>
+                    <line x1="12" y1="21" x2="12" y2="23"></line>
+                    <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                    <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                    <line x1="1" y1="12" x2="3" y2="12"></line>
+                    <line x1="21" y1="12" x2="23" y2="12"></line>
+                    <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                    <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+                </svg>
+            </button>
+        </div>
+    </header>
+
+    <!-- ============================================================ -->
+    <!-- HERO / BÚSQUEDA PRINCIPAL                                     -->
+    <!-- ============================================================ -->
+    <section class="hero" id="hero-search">
+        <div class="hero__overlay"></div>
+        <div class="hero__content">
+            <p class="hero__tagline">Explora el conocimiento. Encuentra tu próximo libro.</p>
+
+            <!-- Barra de búsqueda compuesta -->
+            <form class="search-bar" id="search-form" autocomplete="off">
+                <!-- Desplegable de sede -->
+                <div class="search-bar__select-wrapper">
+                    <select class="search-bar__select" id="select-sede" aria-label="Seleccionar sede">
+                        <option value="Biblioteca Central" selected>Biblioteca Central</option>
+                    </select>
+                </div>
+
+                <!-- Campo de búsqueda -->
+                <div class="search-bar__input-wrapper">
+                    <input type="text" class="search-bar__input" id="search-input"
+                        placeholder="Buscar en el catálogo general..." aria-label="Término de búsqueda">
+                </div>
+
+                <!-- Desplegable de filtro -->
+                <div class="search-bar__select-wrapper">
+                    <select class="search-bar__select" id="select-filtro" aria-label="Filtro de búsqueda">
+                        <option value="general">Catálogo general</option>
+                        <option value="titulo">Por Título</option>
+                        <option value="autor">Por Autor</option>
+                    </select>
+                </div>
+
+                <!-- Botón lupa -->
+                <button type="submit" class="search-bar__btn" id="btn-search" aria-label="Buscar">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+                        stroke-linejoin="round">
+                        <circle cx="11" cy="11" r="8" />
+                        <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                    </svg>
+                </button>
+            </form>
+        </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- ÁREA DE RESULTADOS                                            -->
+    <!-- ============================================================ -->
+    <main class="results-section" id="results-section">
+        <!-- Estado vacío / inicial -->
+        <div class="results__empty" id="results-empty">
+            <svg class="results__empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+            </svg>
+            <h2>Busca en nuestro catálogo</h2>
+            <p>Utiliza la barra superior para explorar libros por título, autor o palabra clave.</p>
+        </div>
+
+        <!-- Spinner de carga -->
+        <div class="results__loading hidden" id="results-loading">
+            <div class="spinner"></div>
+            <p>Consultando catálogo...</p>
+        </div>
+
+        <!-- Mensaje sin resultados -->
+        <div class="results__no-results hidden" id="results-no-results">
+            <svg class="results__empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <circle cx="11" cy="11" r="8" />
+                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                <line x1="8" y1="8" x2="14" y2="14" />
+                <line x1="14" y1="8" x2="8" y2="14" />
+            </svg>
+            <h2>No se encontraron resultados</h2>
+            <p>Intenta con otro término de búsqueda o selecciona un filtro diferente.</p>
+        </div>
+
+        <!-- Contenedor de tarjetas de libros -->
+        <div class="results__grid hidden" id="results-grid"></div>
+    </main>
+
+    <!-- ============================================================ -->
+    <!-- MODAL: BIBLIOTECA CENTRAL                                    -->
+    <!-- ============================================================ -->
+    <div class="modal-overlay hidden" id="modal-overlay">
+        <div class="modal" id="modal-bibliografia" role="dialog" aria-labelledby="modal-title">
+            <div class="modal__header">
+                <div>
+                    <h2 class="modal__title" id="modal-title">Biblioteca Central "Sede La Florencia"</h2>
+                    <p class="modal__subtitle">Universidad Santa María</p>
+                </div>
+                <button class="modal__close" id="modal-close" aria-label="Cerrar modal">&times;</button>
+            </div>
+            <div class="modal__body" id="modal-body">
+                <div class="modal__content" id="modal-content">
+
+                    <!-- Acerca de la Biblioteca -->
+                    <div class="biblio-card">
+                        <h3>
+                            <svg class="biblio-card__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M3 21h18M3 10h18M5 10v11M9 10v11M15 10v11M19 10v11M12 3l9 7H3z" />
+                            </svg>
+                            Acerca de la Biblioteca
+                        </h3>
+                        <p>La Biblioteca Central de la Universidad Santa María (Sede La Florencia) es el núcleo de
+                            información, consulta y apoyo académico de nuestra comunidad universitaria. Su misión
+                            principal es garantizar el acceso equitativo al conocimiento, facilitando recursos
+                            bibliográficos, espacios de estudio y herramientas tecnológicas que impulsan la docencia, la
+                            investigación y la formación integral de estudiantes, profesores e investigadores.</p>
+                    </div>
+
+                    <!-- Historia y Evolución Institucional -->
+                    <div class="biblio-card">
+                        <h3>
+                            <svg class="biblio-card__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+                                <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+                            </svg>
+                            Historia y Evolución Institucional
+                        </h3>
+                        <div class="biblio-card__timeline">
+                            <div class="timeline-item">
+                                <strong>Orígenes (13 de octubre de 1953):</strong>
+                                <p>La Universidad Santa María fue fundada por la educadora Lola Rodríguez de Fuenmayor,
+                                    convirtiéndose en la primera universidad privada de Venezuela. Inició sus
+                                    actividades académicas en El Paraíso (Caracas), albergando las facultades pioneras
+                                    de Derecho, Farmacia, Odontología e Ingeniería.</p>
+                            </div>
+                            <div class="timeline-item">
+                                <strong>Consolidación en La Florencia (1983):</strong>
+                                <p>Con el rápido crecimiento de la matrícula estudiantil, en 1983 se inició la
+                                    construcción del campus principal en el sector La Florencia (al final de la Av.
+                                    Francisco de Miranda, sector Petare – Guarenas). Este espacio unificó las distintas
+                                    facultades en un entorno moderno y accesible.</p>
+                            </div>
+                            <div class="timeline-item">
+                                <strong>El Acervo Documental:</strong>
+                                <p>En el marco de esta expansión, la Biblioteca Central se erigió como el centro
+                                    neurálgico del conocimiento en el campus. A lo largo de las décadas, ha resguardado
+                                    y preservado la memoria académica de la institución, albergando miles de textos,
+                                    investigaciones y trabajos de grado producidos por las facultades de Ingeniería y
+                                    Arquitectura, Derecho, Ciencias Económicas y Sociales, Farmacia, Odontología y
+                                    Educación.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Misión y Visión -->
+                    <div class="biblio-card">
+                        <h3>
+                            <svg class="biblio-card__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <circle cx="12" cy="12" r="10" />
+                                <circle cx="12" cy="12" r="6" />
+                                <circle cx="12" cy="12" r="2" />
+                            </svg>
+                            Misión y Visión
+                        </h3>
+                        <div class="timeline-item">
+                            <strong>Misión:</strong>
+                            <p>Proveer servicios bibliográficos y tecnológicos de calidad, custodiando y difundiendo el
+                                patrimonio documental de la institución para respaldar los programas de pregrado y
+                                posgrado.</p>
+                        </div>
+                        <div class="timeline-item" style="margin-top: 0.75rem;">
+                            <strong>Visión:</strong>
+                            <p>Consolidarse como un centro de recursos para el aprendizaje y la investigación moderno,
+                                accesible e innovador, adaptado a las nuevas tecnologías y a las exigencias académicas
+                                del siglo XXI.</p>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+        </div>
     </div>
-    <p id="load">Firebase SDK Loading&hellip;</p>
 
-    <script>
-      document.addEventListener('DOMContentLoaded', function() {
-        const loadEl = document.querySelector('#load');
-        // // 🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥
-        // // The Firebase SDK is initialized and available here!
-        //
-        // firebase.auth().onAuthStateChanged(user => { });
-        // firebase.database().ref('/path/to/ref').on('value', snapshot => { });
-        // firebase.firestore().doc('/foo/bar').get().then(() => { });
-        // firebase.functions().httpsCallable('yourFunction')().then(() => { });
-        // firebase.messaging().requestPermission().then(() => { });
-        // firebase.storage().ref('/path/to/ref').getDownloadURL().then(() => { });
-        // firebase.analytics(); // call to activate
-        // firebase.analytics().logEvent('tutorial_completed');
-        // firebase.performance(); // call to activate
-        //
-        // // 🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥
+    <!-- ============================================================ -->
+    <!-- FOOTER                                                        -->
+    <!-- ============================================================ -->
+    <footer class="footer" id="footer">
+        <p>&copy; 2026 Universidad Santa María — Biblioteca Central. Todos los derechos reservados.</p>
+    </footer>
 
-        try {
-          let app = firebase.app();
-          let features = [
-            'auth', 
-            'database', 
-            'firestore',
-            'functions',
-            'messaging', 
-            'storage', 
-            'analytics', 
-            'remoteConfig',
-            'performance',
-          ].filter(feature => typeof app[feature] === 'function');
-          loadEl.textContent = `Firebase SDK loaded with ${features.join(', ')}`;
-        } catch (e) {
-          console.error(e);
-          loadEl.textContent = 'Error loading the Firebase SDK, check the console.';
-        }
-      });
-    </script>
-  </body>
+    <!-- ============================================================ -->
+    <!-- SCRIPTS                                                       -->
+    <!-- ============================================================ -->
+    <!-- Firebase SDK v9+ (Modular via CDN compat) -->
+    <script type="module" src="firebase-config.js"></script>
+    <script type="module" src="app.js"></script>
+
+</body>
+
 </html>
