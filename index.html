@@ -8,9 +8,10 @@
         content="Portal de la Biblioteca Central de la Universidad Santa María (USM). Consulta el catálogo bibliográfico, busca libros por título, autor, materia o cota, y verifica la disponibilidad en tiempo real.">
     <title>Biblioteca Central USM — Catálogo en Línea</title>
 
-    <!-- Google Fonts -->
+    <!-- Google Fonts & CDN Preconnect -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
     <link
         href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Playfair+Display:wght@600;700;800&display=swap"
         rel="stylesheet">
@@ -27,7 +28,7 @@
     <header class="navbar" id="navbar">
         <!-- Logo y nombre institucional -->
         <div class="navbar__brand">
-            <img src="assets/logo-usm.png" alt="Logo Universidad Santa María" class="navbar__logo" id="logo-usm">
+            <img src="assets/logo-usm.png" alt="Logo Universidad Santa María" class="navbar__logo" id="logo-usm" width="50" height="50" decoding="async" fetchpriority="high">
             <div class="navbar__brand-text">
                 <span class="navbar__university">Universidad Santa María</span>
                 <span class="navbar__subtitle">Biblioteca Central</span>
@@ -103,6 +104,7 @@
                         <option value="general">Catálogo general</option>
                         <option value="titulo">Por Título</option>
                         <option value="autor">Por Autor</option>
+                        <option value="cota">Por Cota</option>
                     </select>
                 </div>
 
@@ -153,6 +155,40 @@
         <!-- Contenedor de tarjetas de libros -->
         <div class="results__grid hidden" id="results-grid"></div>
     </main>
+
+    <!-- ============================================================ -->
+    <!-- MODAL: DETALLE CONSOLIDADO DE LIBRO Y TOMOS                  -->
+    <!-- ============================================================ -->
+    <div class="modal-overlay hidden" id="modal-book-overlay">
+        <div class="modal modal--book-detail" id="modal-book-detail" role="dialog" aria-labelledby="modal-book-title">
+            <div class="modal__header">
+                <div class="modal__header-info">
+                    <h2 class="modal__title" id="modal-book-title">Título del Libro</h2>
+                    <p class="modal__subtitle" id="modal-book-author">por Autor</p>
+                </div>
+                <button class="modal__close" id="modal-book-close" aria-label="Cerrar detalle">&times;</button>
+            </div>
+            <div class="modal__body" id="modal-book-body">
+                <!-- Desglose de Tomos -->
+                <div class="book-detail-section">
+                    <div class="book-detail-section-header">
+                        <h3 class="book-detail-section-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                                <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+                            </svg>
+                            Tomos Registrados
+                        </h3>
+                        <span class="book-detail-count-badge" id="modal-book-tomos-count">1 Tomo</span>
+                    </div>
+                    
+                    <div class="tomos-list" id="modal-tomos-list">
+                        <!-- Las tarjetas de cada tomo se insertan dinámicamente aquí -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- ============================================================ -->
     <!-- MODAL: BIBLIOTECA CENTRAL                                    -->

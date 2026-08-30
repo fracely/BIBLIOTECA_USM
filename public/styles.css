@@ -509,6 +509,9 @@ body {
     grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
     gap: 1.5rem;
     animation: fadeInUp 0.5s ease-out;
+    /* Permite que el navegador omita el render de tarjetas fuera de pantalla */
+    content-visibility: auto;
+    contain-intrinsic-size: 0 400px;
 }
 
 /* ----------------------------------------------------------------
@@ -523,9 +526,20 @@ body {
     transition: all var(--transition-smooth);
     position: relative;
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    cursor: default;
+    /* Limita el scope de layout/paint a cada tarjeta individualmente */
+    contain: layout style;
 }
 
-.book-card::before {
+/* Solo las tarjetas con múltiples tomos son interactivas */
+.book-card--clickable {
+    cursor: pointer;
+    will-change: transform; /* Promueve a capa de composición para animación suave */
+}
+
+.book-card--clickable::before {
     content: '';
     position: absolute;
     top: 0;
@@ -537,18 +551,23 @@ body {
     transition: opacity var(--transition-smooth);
 }
 
-[data-theme="dark"] .book-card::before {
+[data-theme="dark"] .book-card--clickable::before {
     background: linear-gradient(90deg, #94A3B8, #E2E8F0);
 }
 
-.book-card:hover {
+.book-card--clickable:hover {
     transform: translateY(-4px);
     box-shadow: var(--theme-shadow-hover);
     border-color: var(--theme-text-secondary);
 }
 
-.book-card:hover::before {
+.book-card--clickable:hover::before {
     opacity: 1;
+}
+
+.book-card--clickable:focus-visible {
+    outline: 2px solid var(--theme-text-primary);
+    outline-offset: 2px;
 }
 
 .book-card__title {
@@ -575,25 +594,91 @@ body {
 .book-card__details {
     display: flex;
     flex-direction: column;
-    gap: 0.45rem;
+    gap: 0.6rem;
     margin-bottom: 1.25rem;
+    flex: 1;
 }
 
 .book-card__detail {
     display: flex;
-    align-items: center;
+    align-items: baseline;
     gap: 0.5rem;
     font-size: 0.85rem;
+}
+
+.book-card__detail--cota {
+    align-items: center;
+    margin-bottom: 0.15rem;
 }
 
 .book-card__detail-label {
     font-weight: 600;
     color: var(--theme-text-primary);
-    min-width: 65px;
+    min-width: 45px;
 }
 
 .book-card__detail-value {
     color: var(--theme-text-secondary);
+}
+
+.book-card__cota-value {
+    font-family: 'Consolas', 'Menlo', 'Monaco', 'Courier New', monospace;
+    font-size: 0.82rem;
+    font-weight: 700;
+    padding: 0.18rem 0.55rem;
+    background: var(--theme-bg-card-alt);
+    color: var(--theme-text-primary);
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-sm);
+    letter-spacing: 0.3px;
+    display: inline-block;
+    word-break: break-word;
+}
+
+/* Badges de tomos para libros multivolumen */
+.book-card__tomos-badges {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-top: 0.25rem;
+}
+
+.book-card__tomos-label {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--theme-text-primary);
+}
+
+.book-card__badges-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+
+.tomo-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.2rem 0.55rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.76rem;
+    font-weight: 700;
+    background: var(--theme-bg-card-alt);
+    color: var(--theme-text-primary);
+    border: 1px solid var(--theme-border);
+    transition: all var(--transition-fast);
+}
+
+.book-card--clickable:hover .tomo-badge {
+    border-color: var(--theme-text-primary);
+}
+
+.tomo-badge--available {
+    border-left: 3px solid var(--color-available);
+}
+
+.tomo-badge--unavailable {
+    border-left: 3px solid var(--color-unavailable);
+    opacity: 0.7;
 }
 
 .book-card__divider {
@@ -736,6 +821,8 @@ body {
     padding: 1.4rem;
     border-left: 4px solid var(--theme-text-primary);
     transition: all var(--transition-fast);
+    will-change: transform;
+    contain: layout style;
 }
 
 .biblio-card:hover {
@@ -786,6 +873,201 @@ body {
 .timeline-item p {
     font-size: 0.88rem;
     color: var(--theme-text-secondary);
+}
+
+/* ----------------------------------------------------------------
+   7.1. MODAL DETALLE DE LIBRO CONSOLIDADO Y TOMOS
+   ---------------------------------------------------------------- */
+.modal--book-detail {
+    max-width: 720px;
+}
+
+.modal__header-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.book-detail-section {
+    margin-top: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.book-detail-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1.25rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--theme-border);
+}
+
+.book-detail-section-title {
+    font-family: var(--font-display);
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--theme-text-primary);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.book-detail-section-title svg {
+    width: 20px;
+    height: 20px;
+    color: var(--theme-text-primary);
+}
+
+.book-detail-count-badge {
+    background: var(--theme-text-primary);
+    color: var(--theme-bg-surface);
+    padding: 0.25rem 0.75rem;
+    border-radius: 50px;
+    font-size: 0.78rem;
+    font-weight: 700;
+}
+
+.tomos-list {
+    display: grid;
+    gap: 0.85rem;
+}
+
+.tomo-card {
+    background: var(--theme-bg-card-alt);
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    padding: 1.1rem 1.25rem;
+    transition: all var(--transition-fast);
+    position: relative;
+    will-change: transform;
+    contain: layout style;
+}
+
+.tomo-card--available {
+    border-left: 4px solid var(--color-available);
+}
+
+.tomo-card--unavailable {
+    border-left: 4px solid var(--color-unavailable);
+}
+
+.tomo-card:hover {
+    box-shadow: var(--theme-shadow-card);
+    transform: translateX(3px);
+}
+
+.tomo-card__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.tomo-card__title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.tomo-card__badge-index {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: var(--theme-bg-surface);
+    border: 1px solid var(--theme-border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.78rem;
+    font-weight: 800;
+    color: var(--theme-text-primary);
+    flex-shrink: 0;
+}
+
+.tomo-card__name {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--theme-text-primary);
+}
+
+.tomo-card__status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.3rem 0.8rem;
+    border-radius: 50px;
+    font-size: 0.76rem;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+}
+
+.tomo-card__status--available {
+    background: var(--color-available-bg);
+    color: var(--color-available);
+    border: 1px solid rgba(34, 197, 94, 0.25);
+}
+
+.tomo-card__status--unavailable {
+    background: var(--color-unavailable-bg);
+    color: var(--color-unavailable);
+    border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
+.tomo-card__body {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+    background: var(--theme-bg-surface);
+    padding: 0.75rem 1rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--theme-border);
+}
+
+.tomo-card__specs {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+}
+
+.tomo-card__spec {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.85rem;
+}
+
+.tomo-card__spec--cota {
+    align-items: center;
+}
+
+.tomo-card__spec-label {
+    font-weight: 600;
+    color: var(--theme-text-secondary);
+}
+
+.tomo-card__spec-val {
+    font-weight: 700;
+    color: var(--theme-text-primary);
+}
+
+.tomo-card__cota-val {
+    font-family: 'Consolas', 'Menlo', 'Monaco', 'Courier New', monospace;
+    font-size: 0.82rem;
+    font-weight: 700;
+    padding: 0.18rem 0.55rem;
+    background: var(--theme-bg-card-alt);
+    color: var(--theme-text-primary);
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-sm);
+    letter-spacing: 0.3px;
+    display: inline-block;
+    word-break: break-word;
 }
 
 /* ----------------------------------------------------------------

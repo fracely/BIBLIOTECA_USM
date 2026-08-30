@@ -1,16 +1,6 @@
 // ================================================================
 // SEED-DATA.JS — Script para poblar Firestore con libros de prueba
-// 
-// INSTRUCCIONES DE USO:
-// 1. Abre tu archivo index.html en el navegador.
-// 2. Abre la consola del navegador (F12 → Console).
-// 3. Copia y pega TODO el contenido de este archivo en la consola.
-// 4. Presiona Enter para ejecutar.
-// 5. Verás mensajes de confirmación por cada libro añadido.
-// 6. ¡Listo! Ya puedes buscar estos libros en el portal.
-//
-// NOTA: Solo necesitas ejecutar esto UNA VEZ para cargar los datos
-// de prueba en tu base de datos Firestore.
+// Portal Biblioteca Central USM
 // ================================================================
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
@@ -30,17 +20,53 @@ const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
 // ----------------------------------------------------------------
-// DATOS DE PRUEBA: 5 libros de muestra para la Biblioteca Central
+// DATOS DE PRUEBA: Libros individuales y obras multivolumen
 // ----------------------------------------------------------------
 const librosDePrueba = [
+    // --- Obra Multivolumen: Caracas en el Centenario del Libertador ---
+    {
+        titulo: "CARACAS EN EL CENTENARIO DEL LIBERTADOR: TOMO I",
+        autor: "Comité Ejecutivo del Centenario",
+        cota: "F2341 .C28 1983 T.1",
+        materia: "Historia de Venezuela / Acervo Histórico",
+        sede: "Biblioteca Central",
+        anio: 1983,
+        editorial: "Ediciones de la Presidencia de la República",
+        disponible: true,
+        ejemplares: 2,
+        palabrasClave: ["caracas", "centenario", "libertador", "bolivar", "historia", "venezuela"]
+    },
+    {
+        titulo: "CARACAS EN EL CENTENARIO DEL LIBERTADOR: TOMO II",
+        autor: "Comité Ejecutivo del Centenario",
+        cota: "F2341 .C28 1983 T.2",
+        materia: "Historia de Venezuela / Acervo Histórico",
+        sede: "Biblioteca Central",
+        anio: 1983,
+        editorial: "Ediciones de la Presidencia de la República",
+        disponible: true,
+        ejemplares: 2,
+        palabrasClave: ["caracas", "centenario", "libertador", "bolivar", "historia", "venezuela"]
+    },
+    {
+        titulo: "CARACAS EN EL CENTENARIO DEL LIBERTADOR: TOMO III",
+        autor: "Comité Ejecutivo del Centenario",
+        cota: "F2341 .C28 1983 T.3",
+        materia: "Historia de Venezuela / Acervo Histórico",
+        sede: "Biblioteca Central",
+        anio: 1983,
+        editorial: "Ediciones de la Presidencia de la República",
+        disponible: false,
+        ejemplares: 0,
+        palabrasClave: ["caracas", "centenario", "libertador", "bolivar", "historia", "venezuela"]
+    },
+
+    // --- Libros individuales regulares ---
     {
         titulo: "Cálculo con Geometría Analítica",
-        titulo_lower: "calculo con geometria analitica",
         autor: "Dennis G. Zill",
-        autor_lower: "dennis g. zill",
         cota: "QA303 .Z55 2015",
         materia: "Matemáticas / Ingeniería",
-        materia_lower: "matematicas / ingenieria",
         sede: "Biblioteca Central",
         anio: 2015,
         editorial: "McGraw-Hill",
@@ -50,12 +76,9 @@ const librosDePrueba = [
     },
     {
         titulo: "Introducción al Derecho",
-        titulo_lower: "introduccion al derecho",
         autor: "Agustín Squella Narducci",
-        autor_lower: "agustin squella narducci",
         cota: "K230 .S68 2014",
         materia: "Derecho / Ciencias Jurídicas",
-        materia_lower: "derecho / ciencias juridicas",
         sede: "Biblioteca Central",
         anio: 2014,
         editorial: "Editorial Jurídica de Chile",
@@ -65,12 +88,9 @@ const librosDePrueba = [
     },
     {
         titulo: "Farmacología Básica y Clínica",
-        titulo_lower: "farmacologia basica y clinica",
         autor: "Bertram G. Katzung",
-        autor_lower: "bertram g. katzung",
         cota: "RM300 .K38 2019",
         materia: "Farmacia / Ciencias de la Salud",
-        materia_lower: "farmacia / ciencias de la salud",
         sede: "Biblioteca Central",
         anio: 2019,
         editorial: "McGraw-Hill / Lange",
@@ -80,12 +100,9 @@ const librosDePrueba = [
     },
     {
         titulo: "Fundamentos de Programación con Java",
-        titulo_lower: "fundamentos de programacion con java",
         autor: "Herbert Schildt",
-        autor_lower: "herbert schildt",
         cota: "QA76.73 .J38 2021",
         materia: "Ingeniería de Sistemas / Informática",
-        materia_lower: "ingenieria de sistemas / informatica",
         sede: "Biblioteca Central",
         anio: 2021,
         editorial: "Oracle Press",
@@ -95,12 +112,9 @@ const librosDePrueba = [
     },
     {
         titulo: "Principios de Economía",
-        titulo_lower: "principios de economia",
         autor: "N. Gregory Mankiw",
-        autor_lower: "n. gregory mankiw",
         cota: "HB171 .M36 2020",
         materia: "Ciencias Económicas y Sociales",
-        materia_lower: "ciencias economicas y sociales",
         sede: "Biblioteca Central",
         anio: 2020,
         editorial: "Cengage Learning",

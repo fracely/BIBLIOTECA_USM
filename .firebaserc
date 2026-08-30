@@ -1,5 +1,15 @@
 {
   "projects": {
     "default": "sistema-biblioteca-usm-631f9"
-  }
+  },
+  "targets": {
+    "sistema-biblioteca-usm-631f9": {
+      "hosting": {
+        "nuevo-sitio": [
+          "biblioteca-lola-fuenmayor-usm"
+        ]
+      }
+    }
+  },
+  "etags": {}
 }
