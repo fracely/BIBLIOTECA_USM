@@ -1,5 +1,6 @@
 {
   "hosting": {
+    "target": "nuevo-sitio",
     "public": "public",
     "ignore": [
       "firebase.json",
