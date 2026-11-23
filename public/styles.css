@@ -514,6 +514,39 @@ body {
     contain-intrinsic-size: 0 400px;
 }
 
+.btn-mostrar-mas {
+    grid-column: 1 / -1;
+    margin: 1.5rem auto 0;
+    padding: 0.85rem 2rem;
+    background: var(--theme-bg-surface);
+    color: var(--theme-text-primary);
+    border: 2px solid var(--theme-border-focus);
+    border-radius: var(--radius-md);
+    font-family: var(--font-primary);
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: var(--theme-shadow-card);
+    transition: all var(--transition-smooth);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+}
+
+.btn-mostrar-mas:hover {
+    background: var(--theme-text-primary);
+    color: var(--theme-bg-surface);
+    transform: translateY(-2px);
+    box-shadow: var(--theme-shadow-hover);
+}
+
+.btn-mostrar-mas:focus-visible {
+    outline: 2px solid var(--theme-text-primary);
+    outline-offset: 2px;
+}
+
+
 /* ----------------------------------------------------------------
    6. TARJETA DE LIBRO
    ---------------------------------------------------------------- */

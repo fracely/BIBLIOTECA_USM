@@ -1,13 +1,28 @@
 // ================================================================
 // APP.JS — Lógica Universal, Agrupación de Tomos y Modal de Detalle
 // Portal Biblioteca Central USM
+// Versión Optimizada para Alto Rendimiento (High Performance / INP < 16ms)
 // ================================================================
 
 import { db } from "./firebase-config.js";
 import {
     collection,
-    getDocs
+    getDocs,
+    onSnapshot
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+// ----------------------------------------------------------------
+// 0. CONSTANTES DE RENDIMIENTO
+// ----------------------------------------------------------------
+const DEBOUNCE_MS         = 350;          // ms de espera tras la última tecla antes de buscar
+const MAX_RENDER          = 50;           // límite estricto de tarjetas por página en DOM
+const STAGGER_CAP         = 20;           // máximo de tarjetas con animación escalonada
+const SNAPSHOT_THROTTLE   = 2000;         // ms mínimos entre actualizaciones en tiempo real
+const SESSION_CACHE_KEY   = "usm-catalogo-cache-v4";
+const SESSION_CACHE_TS    = "usm-catalogo-ts-v4";
+const SESSION_CACHE_COL   = "usm-catalogo-col-v4";
+const SESSION_CACHE_TTL   = 5 * 60 * 1000; // 5 minutos de vigencia del caché en sessionStorage
+const NORM_CACHE_MAX      = 10000;        // capacidad máxima de caché de normalización (evicción FIFO)
 
 // ----------------------------------------------------------------
 // 1. REFERENCIAS AL DOM
@@ -56,19 +71,29 @@ if (selectFiltro) {
         const filtro = selectFiltro.value;
         searchInput.placeholder = placeholderMap[filtro] || placeholderMap.general;
         searchInput.focus();
+        // Si ya hay un término escrito, relanzar búsqueda con el nuevo filtro
+        if (searchInput.value.trim()) {
+            _busquedaConDebounce.cancel();
+            ejecutarBusqueda();
+        }
     });
 }
 
 // ----------------------------------------------------------------
-// 3. NORMALIZADOR UNIVERSAL DE TEXTO (con caché en memoria)
+// 3. NORMALIZADOR UNIVERSAL DE TEXTO (con caché de evicción FIFO)
 // Elimina tildes, mayúsculas, espacios extra y signos.
 // La caché evita recomputar el mismo string durante cada búsqueda.
+// En lugar de limpiar todo el mapa (.clear()), se descarta la entrada
+// más antigua en O(1) cuando se llega al límite, evitando Cache Thrashing.
 // ----------------------------------------------------------------
 const _normCache = new Map();
+
 function normalizar(texto) {
     if (texto === null || texto === undefined) return "";
     const key = String(texto);
-    if (_normCache.has(key)) return _normCache.get(key);
+    const cached = _normCache.get(key);
+    if (cached !== undefined) return cached;
+
     const result = key
         .toLowerCase()
         .normalize("NFD")
@@ -76,10 +101,21 @@ function normalizar(texto) {
         .replace(/[^\w\s]/gi, " ")
         .replace(/\s+/g, " ")
         .trim();
-    // Limitar tamaño del caché para no crecer indefinidamente
-    if (_normCache.size > 2000) _normCache.clear();
+
+    // Evicción FIFO: mantener los textos calientes en memoria
+    if (_normCache.size >= NORM_CACHE_MAX) {
+        const oldestKey = _normCache.keys().next().value;
+        _normCache.delete(oldestKey);
+    }
     _normCache.set(key, result);
     return result;
+}
+
+// Helper para ceder el hilo principal (Non-blocking Cooperative Scheduling)
+function cederHilo() {
+    return new Promise(resolve => {
+        setTimeout(resolve, 0);
+    });
 }
 
 // ----------------------------------------------------------------
@@ -160,7 +196,6 @@ function formatearRangoCotas(cotas, cotaFallback) {
     }
 
     // Detectar si comparten una base común y varían en tomo/volumen
-    // Ej: "F2341 .C28 1983 T.1", "F2341 .C28 1983 T.2", "F2341 .C28 1983 T.3"
     const regexTomo = /\s*(?:TOMO|VOL|VOLUMEN|T\.?|V\.?|EJ\.?)\s*([0-9IVXLCDMivxlcdm]+)$/i;
     const matches = cotasValidas.map(c => {
         const m = c.match(regexTomo);
@@ -186,14 +221,74 @@ function formatearRangoCotas(cotas, cotaFallback) {
     return `${cotasValidas[0]} – ${cotasValidas[cotasValidas.length - 1]}`;
 }
 
-// Normaliza el texto de la etiqueta (ej. "tomo 1" -> "Tomo 1", "T.1" -> "Tomo 1", "TOMO II" -> "Tomo II")
+// Valida si un valor de tomo/volumen es real y no un marcador nulo o vacío
+function esValorTomoValido(valor) {
+    if (valor === undefined || valor === null) return false;
+    const str = String(valor).trim();
+    if (str === "") return false;
+    if (/^(null|undefined|n\/a|na|\-|\—|none|0|sin tomo|no aplica|no tiene)$/i.test(str)) return false;
+    const norm = normalizar(str);
+    if (norm === "" || norm === "tomo unico" || norm === "tomo unico ejemplar general" || norm === "ejemplar general") return false;
+    return true;
+}
+
+// Determina si una obra o documento posee un tomo/volumen válido asignado
+function tienePropiedadTomoValida(obra) {
+    if (!obra) return false;
+
+    // 1. Obra con múltiples tomos consolidados
+    if (obra.totalTomos > 1) return true;
+
+    // 2. Tomos únicos con etiqueta específica válida
+    if (Array.isArray(obra.tomos) && obra.tomos.length > 0) {
+        const tieneTomoEspecifico = obra.tomos.some(t => t && esValorTomoValido(t.etiquetaTomo));
+        if (tieneTomoEspecifico) return true;
+    }
+
+    // 3. Documentos crudos originales de Firestore
+    if (Array.isArray(obra.itemsCrudos) && obra.itemsCrudos.length > 0) {
+        const tieneCrudoConTomo = obra.itemsCrudos.some(crudo => {
+            if (crudo.etiquetaTomo && esValorTomoValido(crudo.etiquetaTomo)) return true;
+            const raw = crudo.raw || {};
+            const campos = [
+                raw.tomo, raw.volumen, raw.vol, raw.volume, raw.parte,
+                raw.numero_tomo, raw.numeroTomo, raw.num_tomo, raw.numTomo,
+                raw.nro_tomo, raw.nroTomo, raw.tomo_nro, raw.tomoNumero
+            ];
+            return campos.some(v => esValorTomoValido(v));
+        });
+        if (tieneCrudoConTomo) return true;
+    }
+
+    // 4. Verificación directa de propiedades en el objeto
+    if (obra.tomo && esValorTomoValido(obra.tomo)) return true;
+    if (obra.raw) {
+        const raw = obra.raw;
+        const campos = [
+            raw.tomo, raw.volumen, raw.vol, raw.volume, raw.parte,
+            raw.numero_tomo, raw.numeroTomo, raw.num_tomo, raw.numTomo,
+            raw.nro_tomo, raw.nroTomo, raw.tomo_nro, raw.tomoNumero
+        ];
+        return campos.some(v => esValorTomoValido(v));
+    }
+
+    return false;
+}
+
+// Normaliza el texto de la etiqueta
 function formatearEtiquetaTomo(str) {
-    if (!str) return "";
-    let clean = str.trim().replace(/^[\:\-\–\—\/\,\.\|\s]+/, '').replace(/[\:\-\–\—\/\,\.\|\s]+$/, '');
+    if (!str && str !== 0) return "";
+    let clean = String(str).trim().replace(/^[\:\-\–\—\/\,\.\|\s]+/, '').replace(/[\:\-\–\—\/\,\.\|\s]+$/, '');
+    if (!clean || /^(null|undefined|n\/a|na|\-|\—|none)$/i.test(clean)) return "";
     
-    // Si viene como "T.1", "T. 1" o "T-1", normalizar a "Tomo 1"
-    clean = clean.replace(/^T\.?\s*([0-9IVXLCDMivxlcdm]+)$/i, 'Tomo $1');
-    clean = clean.replace(/^V\.?\s*([0-9IVXLCDMivxlcdm]+)$/i, 'Vol. $1');
+    // Si viene solo como número arábigo o romano, anteponer "Tomo "
+    if (/^[0-9]+$/i.test(clean) || /^[IVXLCDMivxlcdm]+$/i.test(clean)) {
+        clean = `Tomo ${clean}`;
+    }
+
+    // Si viene como "T.1", "T. 1", "T-1", "T1", normalizar a "Tomo 1"
+    clean = clean.replace(/^T[\.\-\s]*([0-9IVXLCDMivxlcdm]+)$/i, 'Tomo $1');
+    clean = clean.replace(/^V(?:ol)?[\.\-\s]*([0-9IVXLCDMivxlcdm]+)$/i, 'Vol. $1');
 
     return clean.replace(/\w\S*/g, (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase())
                 .replace(/\b(I|Ii|Iii|Iv|V|Vi|Vii|Viii|Ix|X|Xi|Xii)\b/gi, (m) => m.toUpperCase());
@@ -206,70 +301,125 @@ function mapearLibro(docId, raw) {
     const rawTitulo = raw.titulo || raw.title || raw.nombre || raw.nombre_libro || raw.name || "Sin título";
     const parseado = parsearTituloYTomo(rawTitulo);
 
-    // Tomo explícito o derivado del título
-    let tomo = raw.tomo || raw.volumen || raw.vol || raw.parte || raw.ejemplar || parseado.etiquetaTomo || "";
-    if (tomo) tomo = formatearEtiquetaTomo(String(tomo));
+    const camposTomo = [
+        raw.tomo, raw.volumen, raw.vol, raw.volume, raw.parte,
+        raw.numero_tomo, raw.numeroTomo, raw.num_tomo, raw.numTomo,
+        raw.nro_tomo, raw.nroTomo, raw.tomo_nro, raw.tomoNumero
+    ];
+    const rawTomo = camposTomo.find(
+        v => v !== undefined && v !== null && String(v).trim() !== "" && !/^(null|undefined|n\/a|na|\-|\—|0)$/i.test(String(v).trim())
+    );
+    let tomo = rawTomo ? formatearEtiquetaTomo(rawTomo) : (parseado.etiquetaTomo || "");
+
+    if (!tomo && raw.cota) {
+        const matchCota = String(raw.cota).match(/(?:[\s\.\-]+(?:T\.?|TOMO|VOL\.?|V\.?)\s*([0-9IVXLCDMivxlcdm]+))\b/i);
+        if (matchCota) {
+            tomo = formatearEtiquetaTomo(matchCota[0]);
+        }
+    }
+
     const tituloBase = parseado.tituloBase || rawTitulo;
 
-    // Autor(es)
     let autor = "Autor no especificado";
     if (raw.autor) autor = raw.autor;
     else if (raw.author) autor = raw.author;
     else if (raw.autores) autor = Array.isArray(raw.autores) ? raw.autores.join(", ") : raw.autores;
     else if (raw.escritor) autor = raw.escritor;
 
-    // Cota / Código de ubicación
     const cota = raw.cota || raw.codigo || raw.cod || raw.ubicacion || raw.estante || raw.clasificacion || "—";
-
-    // Materia / Carrera / Área
     const materia = raw.materia || raw.categoria || raw.category || raw.area || raw.carrera || raw.facultad || "General";
-
-    // Año y Editorial
     const anio = raw.anio || raw.año || raw.year || raw.fecha || raw.fecha_publicacion || "—";
     const editorial = raw.editorial || raw.publisher || raw.edicion || "";
 
-    // Ejemplares
     let ejemplares = undefined;
-    if (raw.ejemplares !== undefined) ejemplares = Number(raw.ejemplares);
-    else if (raw.cantidad !== undefined) ejemplares = Number(raw.cantidad);
-    else if (raw.stock !== undefined) ejemplares = Number(raw.stock);
-    else if (raw.copias !== undefined) ejemplares = Number(raw.copias);
+    const rawEjemplares = [
+        raw.ejemplares_disponibles,
+        raw.copias_disponibles,
+        raw.stock_disponible,
+        raw.ejemplares,
+        raw.cantidad,
+        raw.stock,
+        raw.copias,
+        raw.total_ejemplares
+    ].find(v => v !== undefined && v !== null && String(v).trim() !== "");
 
-    // Disponibilidad
+    if (rawEjemplares !== undefined) {
+        const num = Number(rawEjemplares);
+        if (!isNaN(num)) ejemplares = num;
+    }
+
+    const rawFlag = [
+        raw.disponible,
+        raw.disponibilidad,
+        raw.isAvailable,
+        raw.is_available,
+        raw.activo,
+        raw.active
+    ].find(v => v !== undefined && v !== null);
+
+    const rawPrestado = [
+        raw.prestado,
+        raw.enPrestamo,
+        raw.en_prestamo,
+        raw.borrowed
+    ].find(v => v !== undefined && v !== null);
+
+    const estadoRaw = raw.estado !== undefined ? raw.estado : (raw.status !== undefined ? raw.status : (raw.condicion !== undefined ? raw.condicion : ""));
+    const textoEstado = normalizar(typeof rawFlag === "string" ? rawFlag : estadoRaw);
+
+    const esExplicitoNo =
+        rawFlag === false ||
+        rawFlag === 0 ||
+        rawPrestado === true ||
+        rawPrestado === 1 ||
+        String(rawPrestado).trim().toLowerCase() === "true" ||
+        String(rawPrestado).trim().toLowerCase() === "si" ||
+        textoEstado === "false" ||
+        textoEstado === "0" ||
+        textoEstado.includes("no disp") ||
+        textoEstado.includes("no disponible") ||
+        textoEstado.includes("nodisponible") ||
+        textoEstado.includes("prest") ||
+        textoEstado.includes("agot") ||
+        textoEstado.includes("inactiv") ||
+        textoEstado.includes("repara") ||
+        textoEstado.includes("extrav") ||
+        textoEstado === "no";
+
+    const esExplicitoSi =
+        (rawFlag === true ||
+        rawFlag === 1 ||
+        textoEstado === "true" ||
+        textoEstado === "1" ||
+        textoEstado === "si" ||
+        textoEstado === "yes" ||
+        textoEstado === "disponible" ||
+        textoEstado.includes("en sala") ||
+        textoEstado.includes("activo") ||
+        (textoEstado.includes("disp") && !textoEstado.includes("no"))) &&
+        rawPrestado !== true && rawPrestado !== 1;
+
     let estaDisponible = false;
-    if (raw.disponible === true || raw.disponibilidad === true || raw.isAvailable === true || raw.activo === true) {
-        estaDisponible = true;
-    } else if (raw.disponible === false || raw.disponibilidad === false || raw.isAvailable === false || raw.activo === false) {
-        estaDisponible = false;
-    } else if (ejemplares !== undefined && !isNaN(ejemplares)) {
-        estaDisponible = ejemplares > 0;
-    } else {
-        const estadoTexto = normalizar(raw.disponible || raw.disponibilidad || raw.estado || raw.status || raw.condicion || "");
-        if (
-            estadoTexto.includes("disp") ||
-            estadoTexto.includes("sala") ||
-            estadoTexto.includes("activo") ||
-            estadoTexto.includes("si") ||
-            estadoTexto.includes("yes") ||
-            estadoTexto === "1" ||
-            estadoTexto === "true"
-        ) {
-            estaDisponible = true;
-        } else if (
-            estadoTexto.includes("prest") ||
-            estadoTexto.includes("no") ||
-            estadoTexto.includes("agot") ||
-            estadoTexto.includes("inactiv") ||
-            estadoTexto === "0" ||
-            estadoTexto === "false"
-        ) {
+    if (ejemplares !== undefined && !isNaN(ejemplares)) {
+        if (ejemplares <= 0) {
             estaDisponible = false;
+        } else if (esExplicitoNo) {
+            estaDisponible = false;
+        } else if (esExplicitoSi) {
+            estaDisponible = true;
+        } else {
+            estaDisponible = true;
+        }
+    } else {
+        if (esExplicitoNo) {
+            estaDisponible = false;
+        } else if (esExplicitoSi) {
+            estaDisponible = true;
         } else {
             estaDisponible = true;
         }
     }
 
-    // Palabras clave
     let palabrasClave = [];
     if (Array.isArray(raw.palabrasClave)) palabrasClave = raw.palabrasClave;
     else if (Array.isArray(raw.tags)) palabrasClave = raw.tags;
@@ -294,13 +444,16 @@ function mapearLibro(docId, raw) {
 
 // ----------------------------------------------------------------
 // 6. AGRUPACIÓN INTELIGENTE DE LIBROS Y CONSOLIDACIÓN DE TOMOS ÚNICOS
-// - Catálogo General: Cada obra/libro aparece UNA SOLA VEZ.
-// - Modal de Detalle: Cada tomo distinto ("Tomo I", "Tomo II") aparece UNA SOLA VEZ.
+// Optimizado a O(1) con índice secundario y procesamiento no bloqueante
+// que cede el control al Event Loop cada lote para mantener 60 FPS.
 // ----------------------------------------------------------------
-function agruparLibrosPorObra(librosMapeados) {
+async function agruparLibrosPorObra(librosMapeados) {
     const mapaObras = new Map();
+    const mapaTitulos = new Map(); // Índice secundario O(1) por título normalizado
 
-    librosMapeados.forEach(item => {
+    const totalItems = librosMapeados.length;
+    for (let i = 0; i < totalItems; i++) {
+        const item = librosMapeados[i];
         const claveTitulo = normalizar(item.tituloBase);
         const claveAutor = normalizar(item.autor);
 
@@ -310,21 +463,17 @@ function agruparLibrosPorObra(librosMapeados) {
             clave = `${claveTitulo}___${claveAutor}`;
         }
 
-        // Buscar si ya existe la obra
+        // Búsqueda O(1) optimizada sin bucle cuadrático
         let claveExistente = null;
         if (mapaObras.has(clave)) {
             claveExistente = clave;
-        } else {
-            for (const k of mapaObras.keys()) {
-                if (k === claveTitulo || k.startsWith(`${claveTitulo}___`) || (clave.startsWith(`${claveTitulo}___`) && k === claveTitulo)) {
-                    claveExistente = k;
-                    break;
-                }
-            }
+        } else if (mapaTitulos.has(claveTitulo)) {
+            claveExistente = mapaTitulos.get(claveTitulo);
         }
 
         if (!claveExistente) {
             claveExistente = clave;
+            mapaTitulos.set(claveTitulo, claveExistente);
             mapaObras.set(claveExistente, {
                 id: item.id,
                 titulo: item.tituloBase,
@@ -335,7 +484,7 @@ function agruparLibrosPorObra(librosMapeados) {
                 cota: item.cota,
                 ejemplares: item.ejemplares,
                 palabrasClave: [...item.palabrasClave],
-                _pcSet: new Set(item.palabrasClave), // Set para deduplicación O(1)
+                _pcSet: new Set(item.palabrasClave),
                 itemsCrudos: []
             });
         }
@@ -351,7 +500,7 @@ function agruparLibrosPorObra(librosMapeados) {
         if ((!obra.materia || obra.materia === "General") && item.materia && item.materia !== "General") obra.materia = item.materia;
         if ((!obra.cota || obra.cota === "—") && item.cota && item.cota !== "—") obra.cota = item.cota;
 
-        // Consolidar palabras clave (usando Set para deduplicar en O(1))
+        // Consolidar palabras clave con Set O(1)
         item.palabrasClave.forEach(palabra => {
             if (!obra._pcSet.has(palabra)) {
                 obra._pcSet.add(palabra);
@@ -361,8 +510,9 @@ function agruparLibrosPorObra(librosMapeados) {
 
         // Etiqueta del tomo
         let etiquetaTomo = item.tomo;
-        if (!etiquetaTomo) {
-            etiquetaTomo = item.tituloOriginal !== item.tituloBase ? item.tituloOriginal : "";
+        if (!etiquetaTomo && item.tituloOriginal !== item.tituloBase) {
+            const parseadoTomo = parsearTituloYTomo(item.tituloOriginal);
+            etiquetaTomo = parseadoTomo.etiquetaTomo || "";
         }
 
         obra.itemsCrudos.push({
@@ -377,10 +527,19 @@ function agruparLibrosPorObra(librosMapeados) {
             disponible: item.disponible,
             raw: item.raw
         });
-    });
+
+        // Ceder el hilo cada 250 elementos para que la UI no sufra lag
+        if (i > 0 && i % 250 === 0) {
+            await cederHilo();
+        }
+    }
 
     // Consolidar tomos únicos dentro de cada obra
-    const obrasAgrupadas = Array.from(mapaObras.values()).map(obra => {
+    const listaObras = Array.from(mapaObras.values());
+    const obrasAgrupadas = [];
+
+    for (let k = 0; k < listaObras.length; k++) {
+        const obra = listaObras[k];
         const mapaTomos = new Map();
 
         obra.itemsCrudos.forEach(crudo => {
@@ -474,9 +633,37 @@ function agruparLibrosPorObra(librosMapeados) {
         const cotaNorm = normalizar(cotaObraFormateada);
         const cotaCompact = cotaNorm.replace(/\s+/g, "");
 
-        // Pre-computar campos normalizados para búsqueda rápida
-        // (evita re-normalizar en cada keystroke del usuario)
-        return {
+        // Precalcular tomo válido una sola vez
+        const tieneTomoValido = tienePropiedadTomoValida({
+            totalTomos: tomosUnicos.length,
+            tomos: tomosUnicos,
+            itemsCrudos: obra.itemsCrudos
+        });
+
+        // Pre-computar campos normalizados para búsquedas a velocidad de memoria
+        const nTitulo = normalizar(obra.titulo);
+        const nAutor = normalizar(obra.autor);
+        const nMateria = normalizar(obra.materia);
+        const nTags = obra.palabrasClave.map(normalizar);
+        const nTomoTitulos = tomosUnicos.map(t => normalizar(t.tituloCompleto));
+        const nTomoEtiquetas = tomosUnicos
+            .filter(t => esValorTomoValido(t.etiquetaTomo))
+            .map(t => normalizar(t.etiquetaTomo));
+        const nTomoCotasFlat = tomosUnicos
+            .flatMap(t => [normalizar(t.cota), ...(t.cotas || []).map(normalizar)])
+            .filter(Boolean);
+        const nCotasCompactStr = [
+            cotaCompact,
+            ...tomosUnicos.flatMap(t => [
+                normalizar(t.cota).replace(/\s+/g, ""),
+                ...(t.cotas || []).map(c => normalizar(c).replace(/\s+/g, ""))
+            ])
+        ].filter(Boolean).join(" ");
+
+        // String compuesto pre-armado para búsqueda instantánea en catálogo general
+        const nSearchString = `${nTitulo} ${nAutor} ${nMateria} ${cotaNorm} ${nTags.join(" ")} ${nTomoTitulos.join(" ")} ${nTomoEtiquetas.join(" ")} ${nTomoCotasFlat.join(" ")}`.trim();
+
+        obrasAgrupadas.push({
             id: obra.id,
             titulo: obra.titulo,
             autor: obra.autor,
@@ -489,66 +676,165 @@ function agruparLibrosPorObra(librosMapeados) {
             totalTomos: tomosUnicos.length,
             totalEjemplares: totalEjemplaresObra,
             disponible: estaDisponible,
+            tieneTomoValido: tieneTomoValido,
             tomos: tomosUnicos,
-            // Campos pre-normalizados (computados una sola vez al cargar)
-            _nTitulo: normalizar(obra.titulo),
-            _nAutor: normalizar(obra.autor),
-            _nMateria: normalizar(obra.materia),
+            itemsCrudos: obra.itemsCrudos,
+            // Campos pre-normalizados
+            _nTitulo: nTitulo,
+            _nAutor: nAutor,
+            _nMateria: nMateria,
             _nCota: cotaNorm,
             _nCotaCompact: cotaCompact,
-            _nTags: obra.palabrasClave.map(normalizar),
-            _nTomoTitulos: tomosUnicos.map(t => normalizar(t.tituloCompleto)),
-            _nTomoEtiquetas: tomosUnicos.map(t => normalizar(t.etiquetaTomo)),
-            _nTomoCotas: tomosUnicos.map(t =>
-                [normalizar(t.cota), ...(t.cotas || []).map(normalizar)].filter(Boolean)
-            ),
-            _nTomoCotasCompact: tomosUnicos.map(t =>
-                [normalizar(t.cota).replace(/\s+/g, ""), ...(t.cotas || []).map(c => normalizar(c).replace(/\s+/g, ""))].filter(Boolean)
-            )
-        };
-    });
+            _nTags: nTags,
+            _nTomoTitulos: nTomoTitulos,
+            _nTomoEtiquetas: nTomoEtiquetas,
+            _nTomoCotas: tomosUnicos.map(t => [normalizar(t.cota), ...(t.cotas || []).map(normalizar)].filter(Boolean)),
+            _nTomoCotasCompact: tomosUnicos.map(t => [normalizar(t.cota).replace(/\s+/g, ""), ...(t.cotas || []).map(c => normalizar(c).replace(/\s+/g, ""))].filter(Boolean)),
+            _nTomoCotasFlat: nTomoCotasFlat,
+            _nCotasCompactStr: nCotasCompactStr,
+            _nSearchString: nSearchString
+        });
+
+        // Ceder el hilo cada 200 obras
+        if (k > 0 && k % 200 === 0) {
+            await cederHilo();
+        }
+    }
 
     return obrasAgrupadas;
 }
 
 // ----------------------------------------------------------------
-// 7. CACHÉ EN MEMORIA Y CONSULTA A FIRESTORE
-// ----------------------------------------------------------------
-// 7. CACHÉ EN MEMORIA Y CONSULTA A FIRESTORE
-// - Sondeo secuencial de colecciones: evita disparar N lecturas
-//   en paralelo cuando sólo una tendrá datos.
-// - Mutex con Promise real: elimina el busy-wait con setTimeout.
+// 7. CACHÉ EN MEMORIA, sessionStorage Y CONSULTA NO BLOQUEANTE
 // ----------------------------------------------------------------
 let catalogoCache = null;
-let _cargandoPromise = null; // Mutex real basado en Promise
+let _cargandoPromise = null;         // Mutex real basado en Promise
+let _desuscribirTiempoReal = null;    // Listener onSnapshot de Firebase
+let _snapshotThrottleTimer = null;    // Throttle para onSnapshot
+let _coleccionActiva = null;
 const COLECCIONES_A_PROBAR = ["libros", "catalogo", "books", "biblioteca", "inventario"];
+
+// --- Persistencia ligera en sessionStorage ---
+function guardarCacheEnSession(datos, nombreColeccion) {
+    try {
+        const ligero = datos.map(obra => {
+            const { tomos, itemsCrudos, _pcSet, ...resto } = obra;
+            const tomosLigeros = (tomos || []).map(t => {
+                const { raw, ...tResto } = t;
+                return tResto;
+            });
+            return { ...resto, tomos: tomosLigeros };
+        });
+        sessionStorage.setItem(SESSION_CACHE_KEY, JSON.stringify(ligero));
+        sessionStorage.setItem(SESSION_CACHE_TS, String(Date.now()));
+        if (nombreColeccion) {
+            sessionStorage.setItem(SESSION_CACHE_COL, nombreColeccion);
+        }
+    } catch (_e) {
+        // sessionStorage lleno o deshabilitado — silencioso
+    }
+}
+
+function cargarCacheDeSession() {
+    try {
+        const ts = Number(sessionStorage.getItem(SESSION_CACHE_TS) || 0);
+        if (Date.now() - ts > SESSION_CACHE_TTL) return null;
+        const raw = sessionStorage.getItem(SESSION_CACHE_KEY);
+        if (!raw) return null;
+        const datos = JSON.parse(raw);
+        if (!Array.isArray(datos) || datos.length === 0) return null;
+        _coleccionActiva = sessionStorage.getItem(SESSION_CACHE_COL);
+        console.log(`⚡ Catálogo restaurado desde sessionStorage (${datos.length} obras, ${((Date.now() - ts) / 1000).toFixed(0)}s de antigüedad).`);
+        return datos;
+    } catch (_e) {
+        return null;
+    }
+}
+
+// --- Suscripción en tiempo real (throttled) ---
+function iniciarListenerTiempoReal(nombreColeccion) {
+    if (_desuscribirTiempoReal || !nombreColeccion) return;
+    try {
+        const colRef = collection(db, nombreColeccion);
+        let primeraVez = true;
+        _desuscribirTiempoReal = onSnapshot(colRef, (snapshot) => {
+            if (primeraVez) { primeraVez = false; return; }
+
+            if (_snapshotThrottleTimer) return;
+            _snapshotThrottleTimer = setTimeout(async () => {
+                _snapshotThrottleTimer = null;
+                const lista = [];
+                const docs = snapshot.docs;
+                for (let i = 0; i < docs.length; i++) {
+                    lista.push(mapearLibro(docs[i].id, docs[i].data()));
+                    if (i > 0 && i % 250 === 0) await cederHilo();
+                }
+                catalogoCache = await agruparLibrosPorObra(lista);
+                guardarCacheEnSession(catalogoCache, nombreColeccion);
+                console.log(`🔄 [Tiempo Real] Catálogo sincronizado (${snapshot.size} docs en "${nombreColeccion}")`);
+
+                // Si hay una búsqueda activa visible en pantalla, refrescarla en vivo
+                const termino = searchInput ? searchInput.value.trim() : "";
+                if (termino && resultsGrid && !resultsGrid.classList.contains("hidden")) {
+                    _ultimoTerminoBuscado = null; // Forzar re-filtrado
+                    ejecutarBusqueda();
+                }
+            }, SNAPSHOT_THROTTLE);
+        }, (err) => {
+            console.warn("⚠️ No se pudo suscribir a actualizaciones en tiempo real:", err);
+        });
+    } catch (e) {
+        console.warn("⚠️ No se pudo inicializar onSnapshot:", e);
+    }
+}
 
 async function obtenerTodosLosLibros(forzarRecarga = false) {
     if (catalogoCache && !forzarRecarga) return catalogoCache;
 
-    // Si ya hay una carga en curso, esperar a que termine (sin polling)
+    // Intentar caché rápido de sessionStorage
+    if (!forzarRecarga) {
+        const desdeSesion = cargarCacheDeSession();
+        if (desdeSesion) {
+            catalogoCache = desdeSesion;
+            if (_coleccionActiva) {
+                iniciarListenerTiempoReal(_coleccionActiva);
+            }
+            return catalogoCache;
+        }
+    }
+
+    // Si ya hay una carga en curso, esperar la misma promesa (sin polling)
     if (_cargandoPromise) return _cargandoPromise;
 
     _cargandoPromise = (async () => {
         try {
-            console.log("⚡ Sondeando colecciones de Firestore (secuencial)...");
+            console.log("⚡ Sondeando colecciones de Firestore (secuencial no bloqueante)...");
 
-            // Sondeo secuencial: se detiene al encontrar la primera colección con datos.
-            // Evita N lecturas de Firestore cuando solo 1 colección existe.
             for (const nombreColeccion of COLECCIONES_A_PROBAR) {
                 try {
                     const colRef = collection(db, nombreColeccion);
                     const snapshot = await getDocs(colRef);
                     if (!snapshot.empty) {
                         const lista = [];
-                        snapshot.forEach(doc => lista.push(mapearLibro(doc.id, doc.data())));
-                        const obrasConsolidadas = agruparLibrosPorObra(lista);
+                        const docs = snapshot.docs;
+                        for (let i = 0; i < docs.length; i++) {
+                            lista.push(mapearLibro(docs[i].id, docs[i].data()));
+                            if (i > 0 && i % 200 === 0) {
+                                await cederHilo();
+                            }
+                        }
+
+                        const obrasConsolidadas = await agruparLibrosPorObra(lista);
                         catalogoCache = obrasConsolidadas;
+                        _coleccionActiva = nombreColeccion;
+                        guardarCacheEnSession(catalogoCache, nombreColeccion);
                         console.log(`✅ Colección "${nombreColeccion}": ${lista.length} registros → ${catalogoCache.length} obras únicas.`);
+                        
+                        iniciarListenerTiempoReal(nombreColeccion);
                         return catalogoCache;
                     }
                 } catch (_e) {
-                    // Colección no existe o sin permisos; continuar con la siguiente
+                    // Continuar con la siguiente colección
                 }
             }
 
@@ -558,7 +844,7 @@ async function obtenerTodosLosLibros(forzarRecarga = false) {
             console.error("❌ Error al conectar con Firestore:", error);
             catalogoCache = [];
         } finally {
-            _cargandoPromise = null; // Liberar mutex
+            _cargandoPromise = null;
         }
         return catalogoCache;
     })();
@@ -566,25 +852,144 @@ async function obtenerTodosLosLibros(forzarRecarga = false) {
     return _cargandoPromise;
 }
 
-// Precargar catálogo en segundo plano
-obtenerTodosLosLibros();
+// ----------------------------------------------------------------
+// 7.1. INICIALIZACIÓN DIFERIDA (NON-BLOCKING STARTUP)
+// Asegura que el hilo principal pinte el DOM inicial al 100%
+// antes de comenzar la lectura y procesamiento de Firestore.
+// ----------------------------------------------------------------
+function iniciarCargaDiferida() {
+    const arrancar = () => {
+        obtenerTodosLosLibros().catch(err => {
+            console.warn("⚠️ Error en precarga diferida:", err);
+        });
+    };
+
+    if (typeof requestIdleCallback === "function") {
+        requestIdleCallback(arrancar, { timeout: 2000 });
+    } else {
+        setTimeout(arrancar, 0);
+    }
+}
+
+if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => {
+        setTimeout(iniciarCargaDiferida, 0);
+    });
+} else {
+    setTimeout(iniciarCargaDiferida, 0);
+}
 
 // ----------------------------------------------------------------
 // 8. MOTOR DE BÚSQUEDA Y FILTRADO
 // ----------------------------------------------------------------
+let _ultimosFiltrados = null;
+let _renderOffset = 0;
+let _ultimoTerminoBuscado = null;
+let _ultimoFiltroBuscado = null;
+let _idBusquedaActual = 0; // Token secuencial para cancelar carreras asíncronas
 
-// Limpia el grid y reinicia el estado visual antes de cada búsqueda.
-// Garantiza que nunca queden resultados anteriores visibles.
+// Limpia el grid y reinicia el estado de resultados
 function limpiarResultados() {
     resultsGrid.textContent = "";
     _obrasPorId = new Map();
-    mostrarEstado("loading");
+    _ultimosFiltrados = null;
+    _renderOffset = 0;
+}
+
+// Función de filtrado pura y de alto rendimiento
+function filtrarObras(todasLasObras, terminoNorm, terminoCompact, filtro) {
+    if (!todasLasObras || todasLasObras.length === 0) return [];
+
+    // 1. Detectar si la consulta de búsqueda incluye la palabra "tomo" o "tomos"
+    const buscaTomo = /\btomos?\b/i.test(terminoNorm);
+
+    // Detectar si se especificó un número o identificador de tomo (ej: "tomo 1", "tomo ii", "tomo a")
+    const matchTomoEspecifico = terminoNorm.match(/\btomos?\s+([0-9ivxlcdm]+|[a-z])\b/i);
+    const tomoBuscado = matchTomoEspecifico ? matchTomoEspecifico[0] : null;
+
+    // Extraer palabras restantes que no formen parte de la expresión del tomo
+    let textoSinTomo = terminoNorm;
+    if (tomoBuscado) {
+        textoSinTomo = textoSinTomo.replace(tomoBuscado, " ");
+    } else {
+        textoSinTomo = textoSinTomo.replace(/\btomos?\b/gi, " ");
+    }
+    const palabrasRestantes = textoSinTomo.split(/\s+/).filter(Boolean);
+
+    return todasLasObras.filter(obra => {
+        const tieneTomo = obra.tieneTomoValido !== undefined
+            ? obra.tieneTomoValido
+            : tienePropiedadTomoValida(obra);
+
+        // Si la consulta incluye la palabra "tomo", EXCLUIR libros sin tomo válido
+        if (buscaTomo && !tieneTomo) {
+            return false;
+        }
+
+        // Búsqueda ultra-rápida con String compuesto precalculado
+        const coincideEnObra = (term, termCompact = "") => {
+            if (obra._nSearchString && obra._nSearchString.includes(term)) return true;
+            if (termCompact.length > 1 && obra._nCotasCompactStr && obra._nCotasCompactStr.includes(termCompact)) return true;
+            
+            // Fallback directo por campos
+            return obra._nTitulo.includes(term) ||
+                obra._nAutor.includes(term) ||
+                obra._nMateria.includes(term) ||
+                obra._nCota.includes(term) ||
+                (termCompact.length > 1 && obra._nCotaCompact.includes(termCompact)) ||
+                obra._nTags.some(t => t.includes(term)) ||
+                obra._nTomoTitulos.some(t => t.includes(term)) ||
+                obra._nTomoEtiquetas.some(t => t.includes(term)) ||
+                (obra._nTomoCotasFlat && obra._nTomoCotasFlat.some(c => c.includes(term)));
+        };
+
+        if (buscaTomo) {
+            if (tomoBuscado) {
+                const coincideTomoEspecifico =
+                    obra._nTomoEtiquetas.some(t => t.includes(tomoBuscado) || t === tomoBuscado.replace(/^tomos?\s+/, "tomo ")) ||
+                    obra._nTomoTitulos.some(t => t.includes(tomoBuscado)) ||
+                    obra._nTitulo.includes(tomoBuscado);
+
+                if (!coincideTomoEspecifico) {
+                    return false;
+                }
+            }
+
+            if (palabrasRestantes.length > 0) {
+                return palabrasRestantes.every(p => coincideEnObra(p));
+            }
+
+            return true;
+        }
+
+        // Búsqueda por filtro específico
+        if (filtro === "titulo") {
+            return obra._nTitulo.includes(terminoNorm) ||
+                obra._nTomoTitulos.some(t => t.includes(terminoNorm)) ||
+                obra._nTomoEtiquetas.some(t => t.includes(terminoNorm));
+        }
+        if (filtro === "autor") {
+            return obra._nAutor.includes(terminoNorm);
+        }
+        if (filtro === "cota") {
+            return obra._nCota.includes(terminoNorm) ||
+                (terminoCompact.length > 1 && obra._nCotaCompact.includes(terminoCompact)) ||
+                (obra._nTomoCotasFlat && obra._nTomoCotasFlat.some(c => c.includes(terminoNorm))) ||
+                (terminoCompact.length > 1 && obra._nCotasCompactStr && obra._nCotasCompactStr.includes(terminoCompact));
+        }
+
+        // Catálogo general
+        return coincideEnObra(terminoNorm, terminoCompact);
+    });
 }
 
 async function ejecutarBusqueda() {
     const termino = searchInput.value.trim();
 
     if (!termino) {
+        _ultimoTerminoBuscado = "";
+        _ultimoFiltroBuscado = "";
+        limpiarResultados();
         mostrarEstado("empty");
         return;
     }
@@ -593,78 +998,109 @@ async function ejecutarBusqueda() {
     const terminoCompact = terminoNorm.replace(/\s+/g, "");
     const filtro = selectFiltro.value;
 
-    // Limpiar resultados anteriores ANTES de la consulta async
-    limpiarResultados();
+    // Evitar cálculos redundantes si el término y el filtro no cambiaron
+    if (terminoNorm === _ultimoTerminoBuscado && filtro === _ultimoFiltroBuscado && resultsGrid && !resultsGrid.classList.contains("hidden")) {
+        return;
+    }
+
+    // Token único para invalidar llamadas asíncronas anteriores (evita Race Conditions)
+    const idBusqueda = ++_idBusquedaActual;
+
+    // Mostrar loader solo si la base de datos aún no ha cargado en memoria
+    if (!catalogoCache) {
+        mostrarEstado("loading");
+    }
 
     try {
         const todasLasObras = await obtenerTodosLosLibros();
 
-        if (todasLasObras.length === 0) {
+        // Si el usuario siguió escribiendo mientras cargaban los datos, descartar este resultado
+        if (idBusqueda !== _idBusquedaActual) return;
+
+        if (!todasLasObras || todasLasObras.length === 0) {
+            limpiarResultados();
             mostrarEstado("no-results");
             return;
         }
 
-        // Usar campos pre-normalizados (_nTitulo, _nAutor, _nCota, etc.) calculados al cargar.
-        // Esto evita re-normalizar cada campo en cada pulsación de tecla del usuario.
-        const filtrados = todasLasObras.filter(obra => {
-            if (filtro === "titulo") {
-                return obra._nTitulo.includes(terminoNorm) ||
-                    obra._nTomoTitulos.some(t => t.includes(terminoNorm)) ||
-                    obra._nTomoEtiquetas.some(t => t.includes(terminoNorm));
-            }
-            if (filtro === "autor") {
-                return obra._nAutor.includes(terminoNorm);
-            }
-            if (filtro === "cota") {
-                return obra._nCota.includes(terminoNorm) ||
-                    (terminoCompact.length > 1 && obra._nCotaCompact.includes(terminoCompact)) ||
-                    obra._nTomoCotas.some(cotas => cotas.some(c => c.includes(terminoNorm))) ||
-                    (terminoCompact.length > 1 && obra._nTomoCotasCompact.some(cotas => cotas.some(c => c.includes(terminoCompact))));
-            }
-            // Catálogo general (incluye búsqueda por Título, Autor, Materia, Cota, Tags y Tomos)
-            return obra._nTitulo.includes(terminoNorm) ||
-                obra._nAutor.includes(terminoNorm) ||
-                obra._nMateria.includes(terminoNorm) ||
-                obra._nCota.includes(terminoNorm) ||
-                (terminoCompact.length > 1 && obra._nCotaCompact.includes(terminoCompact)) ||
-                obra._nTags.some(t => t.includes(terminoNorm)) ||
-                obra._nTomoTitulos.some(t => t.includes(terminoNorm)) ||
-                obra._nTomoEtiquetas.some(t => t.includes(terminoNorm)) ||
-                obra._nTomoCotas.some(cotas => cotas.some(c => c.includes(terminoNorm))) ||
-                (terminoCompact.length > 1 && obra._nTomoCotasCompact.some(cotas => cotas.some(c => c.includes(terminoCompact))));
-        });
+        const filtrados = filtrarObras(todasLasObras, terminoNorm, terminoCompact, filtro);
+
+        // Volver a comprobar que sea la búsqueda más reciente
+        if (idBusqueda !== _idBusquedaActual) return;
+
+        _ultimoTerminoBuscado = terminoNorm;
+        _ultimoFiltroBuscado = filtro;
 
         if (filtrados.length > 0) {
-            renderizarResultados(filtrados);
+            _ultimosFiltrados = filtrados;
+            _renderOffset = 0;
+
+            // Renderizar lote inicial respetando estrictamente MAX_RENDER
+            renderizarResultados(filtrados.slice(0, MAX_RENDER), 0, false);
+            _renderOffset = Math.min(MAX_RENDER, filtrados.length);
+
+            // Botón de paginación progresiva si hay más resultados
+            if (filtrados.length > MAX_RENDER) {
+                agregarBotonMostrarMas(filtrados.length - MAX_RENDER);
+            }
             mostrarEstado("grid");
         } else {
+            limpiarResultados();
             mostrarEstado("no-results");
         }
 
     } catch (error) {
+        if (idBusqueda !== _idBusquedaActual) return;
         console.error("Error en la búsqueda:", error);
+        limpiarResultados();
         mostrarEstado("no-results");
     }
 }
 
-// ----------------------------------------------------------------
-// 9. RENDERIZADO DE RESULTADOS (CATÁLOGO PRINCIPAL)
-// Usa DocumentFragment para insertar todas las tarjetas en una
-// sola operación DOM, eliminando N reflows consecutivos.
-// Los eventos de clic se delegan al contenedor padre (ver sección 12).
-// ----------------------------------------------------------------
-function renderizarResultados(obras) {
-    // Limpiar contenido anterior sin destruir el nodo raíz
-    resultsGrid.textContent = "";
+// Botón de paginación progresiva "Mostrar más resultados"
+function agregarBotonMostrarMas(restantes) {
+    const prevBtn = resultsGrid.querySelector(".btn-mostrar-mas");
+    if (prevBtn) prevBtn.remove();
 
-    // Construir todas las tarjetas fuera del DOM vivo
+    const btn = document.createElement("button");
+    btn.className = "btn-mostrar-mas";
+    btn.textContent = `Mostrar más resultados (${restantes} restantes)`;
+    btn.addEventListener("click", () => {
+        btn.remove();
+        if (!_ultimosFiltrados) return;
+        const siguienteLote = _ultimosFiltrados.slice(_renderOffset, _renderOffset + MAX_RENDER);
+        renderizarResultados(siguienteLote, _renderOffset, true /* append */);
+        _renderOffset += siguienteLote.length;
+        const nuevosRestantes = _ultimosFiltrados.length - _renderOffset;
+        if (nuevosRestantes > 0) {
+            agregarBotonMostrarMas(nuevosRestantes);
+        }
+    });
+    resultsGrid.appendChild(btn);
+}
+
+// ----------------------------------------------------------------
+// 9. RENDERIZADO PAGINADO DE RESULTADOS (CATÁLOGO PRINCIPAL)
+// - Respeta estrictamente MAX_RENDER (50) para no saturar el DOM.
+// - Usa DocumentFragment para un único reflow/repaint por lote.
+// - Limita animaciones con STAGGER_CAP (20) para fluidez visual.
+// ----------------------------------------------------------------
+function renderizarResultados(obras, baseIndex = 0, append = false) {
+    if (!append) {
+        resultsGrid.textContent = "";
+        _obrasPorId = new Map();
+    }
+
+    // Salvaguarda: limitar lote estricto a MAX_RENDER
+    const lote = Array.isArray(obras) ? obras.slice(0, MAX_RENDER) : [];
+    if (lote.length === 0) return;
+
     const fragment = document.createDocumentFragment();
 
-    obras.forEach((obra, index) => {
+    lote.forEach((obra, i) => {
         const esMultitomo = obra.totalTomos > 1;
 
-        // Filtrar tomos con etiqueta específica
-        const tomosValidos = obra.tomos.filter(
+        const tomosValidos = (obra.tomos || []).filter(
             t => t.etiquetaTomo &&
             t.etiquetaTomo !== "Tomo Único / Ejemplar General" &&
             t.etiquetaTomo !== "Tomo Único"
@@ -672,9 +1108,11 @@ function renderizarResultados(obras) {
 
         const card = document.createElement("article");
         card.className = esMultitomo ? "book-card book-card--clickable" : "book-card";
-        card.style.cssText = `opacity:0;animation:fadeInUp 0.4s ease-out ${index * 0.05}s forwards`;
 
-        // Marcar tarjetas multi-tomo con data-attribute para delegación de eventos
+        if (i < STAGGER_CAP && !append) {
+            card.style.cssText = `opacity:0;animation:fadeInUp 0.3s ease-out ${i * 0.03}s forwards`;
+        }
+
         if (esMultitomo) {
             card.dataset.obraId = obra.id;
             card.setAttribute("tabindex", "0");
@@ -682,7 +1120,6 @@ function renderizarResultados(obras) {
             card.setAttribute("aria-label", `Ver tomos de ${escapeHTML(obra.titulo)}`);
         }
 
-        // Construir HTML de badges de tomos
         let badgesTomosHTML = "";
         if (tomosValidos.length > 0) {
             const listaBadges = tomosValidos.map(t => {
@@ -691,7 +1128,7 @@ function renderizarResultados(obras) {
             }).join("");
             badgesTomosHTML = `
                 <div class="book-card__tomos-badges">
-                    <span class="book-card__tomos-label">${esMultitomo ? "Tomos disponibles:" : "Tomo disponible:"}</span>
+                    <span class="book-card__tomos-label">${esMultitomo ? "Tomos:" : "Tomo:"}</span>
                     <div class="book-card__badges-list">${listaBadges}</div>
                 </div>`;
         }
@@ -699,7 +1136,6 @@ function renderizarResultados(obras) {
         const statusClass = obra.disponible ? "book-card__status--available" : "book-card__status--unavailable";
         const statusText = obra.disponible ? "Disponible" : "No disponible";
         
-        // Detalle de Cota visible en la tarjeta principal
         const cotaHTML = (obra.cota && obra.cota !== "—")
             ? `<div class="book-card__detail book-card__detail--cota"><span class="book-card__detail-label">Cota:</span><span class="book-card__detail-value book-card__cota-value">${escapeHTML(obra.cota)}</span></div>`
             : "";
@@ -716,32 +1152,28 @@ function renderizarResultados(obras) {
             `<span class="book-card__status ${statusClass}"><span class="book-card__status-dot"></span>${statusText}</span>`;
 
         fragment.appendChild(card);
+
+        if (esMultitomo) {
+            _obrasPorId.set(obra.id, obra);
+        }
     });
 
-    // ✨ Una sola operación de escritura al DOM (un único reflow/repaint)
     resultsGrid.appendChild(fragment);
-
-    // Guardar mapa obra-id → objeto para la delegación de eventos
-    _obrasPorId = new Map(obras.filter(o => o.totalTomos > 1).map(o => [o.id, o]));
 }
 
 // ----------------------------------------------------------------
 // 10. MODAL DE DETALLE: CADA TOMO APARECE EXACTAMENTE UNA VEZ
-// Muestra la Cota individual correspondiente a cada tomo o ejemplar desglosado.
 // ----------------------------------------------------------------
 function abrirModalDetalleLibro(obra) {
     if (!modalBookOverlay) return;
 
-    // 1. Cabecera
     if (modalBookTitle) modalBookTitle.textContent = obra.titulo;
     if (modalBookAuthor) modalBookAuthor.textContent = `por ${obra.autor}`;
 
-    // 2. Conteo de Tomos Únicos
     if (modalBookTomosCount) {
         modalBookTomosCount.textContent = `${obra.tomos.length} ${obra.tomos.length === 1 ? 'Tomo Registrado' : 'Tomos Registrados'}`;
     }
 
-    // 3. Lista de Tomos ÚNICOS (Limpia y directa con Cota individual)
     if (modalTomosList) {
         modalTomosList.innerHTML = "";
 
@@ -752,9 +1184,9 @@ function abrirModalDetalleLibro(obra) {
 
             const tomoStatusText = tomo.disponible ? "Disponible" : "No disponible";
 
-            const cantDisponibles = (tomo.ejemplares !== null && !isNaN(tomo.ejemplares)) 
-                ? tomo.ejemplares 
-                : (tomo.totalCopiasRegistradas || 1);
+            const cantDisponibles = tomo.disponible
+                ? ((tomo.ejemplares !== null && !isNaN(tomo.ejemplares)) ? tomo.ejemplares : (tomo.totalCopiasRegistradas || 1))
+                : 0;
 
             const cotaTomo = (tomo.cotas && tomo.cotas.length > 0)
                 ? tomo.cotas.join(" / ")
@@ -805,7 +1237,6 @@ function abrirModalDetalleLibro(obra) {
         });
     }
 
-    // Mostrar modal
     modalBookOverlay.classList.remove("hidden");
     document.body.style.overflow = "hidden";
 }
@@ -820,7 +1251,6 @@ function cerrarModalDetalleLibro() {
 // ----------------------------------------------------------------
 // 11. UTILIDADES Y CONTROL DE ESTADOS
 // ----------------------------------------------------------------
-// Tabla de reemplazo estática: evita crear un elemento DOM en cada llamada.
 const _escapeMap = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 function escapeHTML(str) {
     if (!str) return "";
@@ -839,24 +1269,34 @@ function mostrarEstado(estado) {
     if (estado === "grid") resultsGrid.classList.remove("hidden");
 }
 
-// Función debounce: retrasa la ejecución hasta que el usuario
-// deje de escribir por 'delay' milisegundos.
+// Implementación robusta de Debounce con soporte para .cancel() y .isPending()
 function debounce(fn, delay) {
-    let timer;
-    return function (...args) {
-        clearTimeout(timer);
-        timer = setTimeout(() => fn.apply(this, args), delay);
+    let timer = null;
+    const debounced = function (...args) {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+            timer = null;
+            fn.apply(this, args);
+        }, delay);
     };
+    debounced.cancel = function () {
+        if (timer) {
+            clearTimeout(timer);
+            timer = null;
+        }
+    };
+    debounced.isPending = function () {
+        return timer !== null;
+    };
+    return debounced;
 }
 
 // ----------------------------------------------------------------
 // 12. GESTIÓN DE EVENTOS
 // ----------------------------------------------------------------
-// Mapa obra id → objeto obra (poblado en renderizarResultados)
 let _obrasPorId = new Map();
 
-// Delegación de eventos en el grid: un único listener gestiona
-// clics y teclado de TODAS las tarjetas sin listeners individuales.
+// Delegación de eventos en el grid
 resultsGrid.addEventListener("click", (e) => {
     const card = e.target.closest(".book-card--clickable");
     if (!card) return;
@@ -873,17 +1313,35 @@ resultsGrid.addEventListener("keydown", (e) => {
     if (obra) abrirModalDetalleLibro(obra);
 });
 
-// Envío del formulario (botón lupa o Enter dentro del input vía submit)
+// ---- Búsqueda Reactiva con Debounce (350ms) y Cancelación Inmediata ----
+const _busquedaConDebounce = debounce(() => ejecutarBusqueda(), DEBOUNCE_MS);
+
+// Escucha reactiva en el input: si se borra, cancela el debounce de inmediato
+searchInput.addEventListener("input", () => {
+    const valor = searchInput.value.trim();
+    if (!valor) {
+        _busquedaConDebounce.cancel();
+        _ultimoTerminoBuscado = "";
+        _ultimoFiltroBuscado = "";
+        limpiarResultados();
+        mostrarEstado("empty");
+        return;
+    }
+    _busquedaConDebounce();
+});
+
+// Envío del formulario (botón lupa o Enter) — ejecución inmediata cancelando debounce pendiente
 searchForm.addEventListener("submit", (e) => {
     e.preventDefault();
+    _busquedaConDebounce.cancel();
     ejecutarBusqueda();
 });
 
-// Enter explícito dentro del campo de búsqueda
-// (refuerzo por si el formulario no captura el evento en todos los contextos)
+// Enter explícito dentro del campo de búsqueda — ejecución inmediata
 searchInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
         e.preventDefault();
+        _busquedaConDebounce.cancel();
         ejecutarBusqueda();
     }
 });
@@ -962,6 +1420,6 @@ if (btnThemeToggle) {
     });
 }
 
-// Inicialización
+// Inicialización de la UI
 mostrarEstado("empty");
-console.log("✅ Portal Biblioteca Central USM — Desduplicación total de tomos activa.");
+console.log("✅ Portal Biblioteca Central USM — Optimización de alto rendimiento activa.");
